@@ -11,13 +11,12 @@
     <title>Fast Radar</title>
     <link rel="manifest" href="manifest.webmanifest" />
     <link rel="apple-touch-icon" href="icons/icon-192.png" />
-    <link rel="stylesheet" href="maplibre-gl.css?v=f392baa" />
-    <link rel="stylesheet" href="styles.css?v=f392baa" />
+    <link rel="stylesheet" href="maplibre-gl.css?v=pinui1" />
+    <link rel="stylesheet" href="styles.css?v=pinui1" />
   </head>
   <body>
     <main id="app" aria-label="Fast weather radar">
       <div id="map" aria-label="Radar map"></div>
-      <div class="center-pin" aria-hidden="true"></div>
 
       <section class="topbar" aria-label="Radar status">
         <div>
@@ -48,11 +47,14 @@
         </button>
       </section>
 
-      <section class="sheet" aria-label="Weather details">
+      <section class="sheet radar-active" id="sheet" aria-label="Weather details">
         <nav class="tabs" aria-label="Weather views">
           <button class="tab active" data-tab="radar" type="button">Radar</button>
           <button class="tab" data-tab="hourly" type="button">Hourly</button>
           <button class="tab" data-tab="discussion" type="button">AFD</button>
+          <button id="collapseBtn" class="collapse-btn" type="button" title="Minimize radar UI" aria-label="Minimize radar UI">
+            <span>⌄</span>
+          </button>
         </nav>
 
         <div class="tab-panel active" id="radarPanel">
@@ -103,7 +105,7 @@
       </section>
     </main>
 
-    <script src="maplibre-gl.js?v=f392baa"></script>
-    <script src="app.js?v=f392baa"></script>
+    <script src="maplibre-gl.js?v=pinui1"></script>
+    <script src="app.js?v=pinui1"></script>
   </body>
 </html>

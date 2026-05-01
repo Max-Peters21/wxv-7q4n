@@ -1,13 +1,13 @@
-const APP_CACHE = "fast-radar-app-v5";
-const RADAR_CACHE = "fast-radar-runtime-v5";
-const MAP_CACHE = "fast-radar-map-v5";
+const APP_CACHE = "fast-radar-app-v6";
+const RADAR_CACHE = "fast-radar-runtime-v6";
+const MAP_CACHE = "fast-radar-map-v6";
 const APP_SHELL = [
   "./",
   "./index.html",
-  "./styles.css?v=f392baa",
-  "./app.js?v=f392baa",
-  "./maplibre-gl.css?v=f392baa",
-  "./maplibre-gl.js?v=f392baa",
+  "./styles.css?v=pinui1",
+  "./app.js?v=pinui1",
+  "./maplibre-gl.css?v=pinui1",
+  "./maplibre-gl.js?v=pinui1",
   "./manifest.webmanifest",
   "./robots.txt",
   "./icons/icon.svg",

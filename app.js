@@ -7,15 +7,18 @@ const RADAR_BUFFER = 0.85;
 
 const state = {
   opacity: 0.82,
+  selectedPoint: { lat: DEFAULT_CENTER[1], lon: DEFAULT_CENTER[0] },
   radarLoaded: null,
   radarRequestId: 0,
   radarLoadStarted: 0,
   playTimer: null,
   frameIndex: 0,
+  mapReady: false,
   point: null,
   hourly: [],
   activeTab: "radar",
-  lastWeatherCenter: null,
+  lastWeatherPoint: null,
+  collapsed: false,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -32,6 +35,12 @@ const map = new maplibregl.Map({
 
 map.dragRotate.disable();
 map.touchZoomRotate.disableRotation();
+
+const markerEl = document.createElement("div");
+markerEl.className = "selected-marker";
+const selectedMarker = new maplibregl.Marker({ element: markerEl, anchor: "center" })
+  .setLngLat(DEFAULT_CENTER)
+  .addTo(map);
 
 function setStatus(text, tone = "") {
   const status = $("status");
@@ -116,7 +125,10 @@ function frameTimes() {
 }
 
 function loadRadar(timeMs = 0, { quiet = false } = {}) {
-  if (!map.isStyleLoaded()) return;
+  if (!state.mapReady) {
+    window.setTimeout(() => loadRadar(timeMs, { quiet }), 250);
+    return;
+  }
 
   const requestId = ++state.radarRequestId;
   const bounds = bufferedBounds();
@@ -198,11 +210,11 @@ function debounce(fn, wait) {
   };
 }
 
-function centerPoint() {
-  const center = map.getCenter();
+function selectedPoint() {
+  const point = state.selectedPoint;
   return {
-    lat: Number(center.lat.toFixed(4)),
-    lon: Number(center.lng.toFixed(4)),
+    lat: Number(point.lat.toFixed(4)),
+    lon: Number(point.lon.toFixed(4)),
   };
 }
 
@@ -229,9 +241,9 @@ async function fetchJson(url) {
 }
 
 async function refreshWeather(force = false) {
-  const point = centerPoint();
-  if (!force && distanceKm(state.lastWeatherCenter, point) < 8) return;
-  state.lastWeatherCenter = point;
+  const point = selectedPoint();
+  if (!force && distanceKm(state.lastWeatherPoint, point) < 8) return;
+  state.lastWeatherPoint = point;
 
   try {
     const pointData = await fetchJson(`https://api.weather.gov/points/${point.lat},${point.lon}`);
@@ -243,6 +255,16 @@ async function refreshWeather(force = false) {
     $("hourlySummary").textContent = "Forecast unavailable";
     $("discussionText").textContent = "Could not load Weather.gov data.";
   }
+}
+
+function setSelectedPoint(point, { refresh = true } = {}) {
+  state.selectedPoint = {
+    lat: Number(point.lat),
+    lon: Number(point.lon),
+  };
+  selectedMarker.setLngLat([state.selectedPoint.lon, state.selectedPoint.lat]);
+  $("placeLabel").textContent = "Selected point";
+  if (refresh) refreshWeather(true);
 }
 
 function updatePlace(props) {
@@ -418,7 +440,6 @@ function cleanDiscussion(text) {
 
 const refreshAfterMove = debounce(() => {
   if (!state.playTimer) loadRadar(0, { quiet: true });
-  refreshWeather(false);
 }, 650);
 
 function useLocation() {
@@ -430,6 +451,13 @@ function useLocation() {
   setStatus("Locating");
   navigator.geolocation.getCurrentPosition(
     (position) => {
+      setSelectedPoint(
+        {
+          lat: position.coords.latitude,
+          lon: position.coords.longitude,
+        },
+        { refresh: false },
+      );
       map.easeTo({
         center: [position.coords.longitude, position.coords.latitude],
         zoom: Math.max(map.getZoom(), 9),
@@ -450,6 +478,8 @@ function useLocation() {
 
 function switchTab(tabName) {
   state.activeTab = tabName;
+  $("sheet").classList.toggle("radar-active", tabName === "radar");
+  if (tabName !== "radar") setCollapsed(false);
   document.querySelectorAll(".tab").forEach((tab) => {
     tab.classList.toggle("active", tab.dataset.tab === tabName);
   });
@@ -457,6 +487,13 @@ function switchTab(tabName) {
     panel.classList.toggle("active", panel.id === `${tabName}Panel`);
   });
   if (tabName === "hourly") drawHourlyChart(state.hourly.slice(0, 36));
+}
+
+function setCollapsed(collapsed) {
+  state.collapsed = collapsed && state.activeTab === "radar";
+  $("sheet").classList.toggle("collapsed", state.collapsed);
+  document.body.classList.toggle("radar-ui-collapsed", state.collapsed);
+  $("collapseBtn").setAttribute("aria-label", state.collapsed ? "Expand radar UI" : "Minimize radar UI");
 }
 
 document.querySelectorAll(".tab").forEach((tab) => {
@@ -471,15 +508,22 @@ $("refreshBtn").addEventListener("click", () => {
   refreshWeather(true);
 });
 $("playBtn").addEventListener("click", toggleLoop);
+$("collapseBtn").addEventListener("click", () => setCollapsed(!state.collapsed));
 $("opacitySlider").addEventListener("input", (event) => {
   state.opacity = Number(event.target.value) / 100;
   if (map.getLayer("radar-layer")) map.setPaintProperty("radar-layer", "raster-opacity", state.opacity);
 });
 
 map.on("load", () => {
+  state.mapReady = true;
+  setSelectedPoint({ lat: DEFAULT_CENTER[1], lon: DEFAULT_CENTER[0] }, { refresh: false });
   loadRadar(0);
   refreshWeather(true);
   window.setTimeout(useLocation, 250);
+});
+
+map.on("click", (event) => {
+  setSelectedPoint({ lat: event.lngLat.lat, lon: event.lngLat.lng });
 });
 
 map.on("moveend", refreshAfterMove);
