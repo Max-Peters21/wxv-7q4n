@@ -11,24 +11,26 @@
     <title>Fast Radar</title>
     <link rel="manifest" href="manifest.webmanifest" />
     <link rel="apple-touch-icon" href="icons/icon-192.png" />
+    <link rel="stylesheet" href="maplibre-gl.css" />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <main id="app" aria-label="Fast weather radar">
-      <div id="map" aria-label="Radar map">
-        <canvas id="basemap" aria-hidden="true"></canvas>
-        <div id="radar"></div>
-      </div>
+      <div id="map" aria-label="Radar map"></div>
+      <div class="center-pin" aria-hidden="true"></div>
 
       <section class="topbar" aria-label="Radar status">
         <div>
-          <p class="eyebrow">NOAA MRMS</p>
+          <p class="eyebrow" id="placeLabel">Normal, IL</p>
           <h1>Fast Radar</h1>
         </div>
-        <div class="status" id="status">Starting</div>
+        <div class="status-stack">
+          <div class="status" id="status">Starting</div>
+          <div class="alert-pill" id="alertPill">No alerts</div>
+        </div>
       </section>
 
-      <section class="controls" aria-label="Radar controls">
+      <section class="map-actions" aria-label="Map controls">
         <button id="zoomInBtn" type="button" title="Zoom in" aria-label="Zoom in">
           <span>+</span>
         </button>
@@ -44,18 +46,64 @@
         <button id="playBtn" type="button" title="Play radar loop" aria-label="Play radar loop">
           <span>▶</span>
         </button>
-        <label class="opacity">
-          <span>Radar</span>
-          <input id="opacitySlider" type="range" min="20" max="100" value="86" />
-        </label>
       </section>
 
-      <section class="readout" aria-label="Radar details">
-        <span id="timestamp">Latest radar</span>
-        <span id="latency">No frame yet</span>
+      <section class="sheet" aria-label="Weather details">
+        <nav class="tabs" aria-label="Weather views">
+          <button class="tab active" data-tab="radar" type="button">Radar</button>
+          <button class="tab" data-tab="hourly" type="button">Hourly</button>
+          <button class="tab" data-tab="discussion" type="button">AFD</button>
+        </nav>
+
+        <div class="tab-panel active" id="radarPanel">
+          <div class="summary-grid">
+            <div>
+              <span class="label">Radar</span>
+              <strong id="timestamp">Latest</strong>
+            </div>
+            <div>
+              <span class="label">Load</span>
+              <strong id="latency">No frame</strong>
+            </div>
+            <div>
+              <span class="label">Now</span>
+              <strong id="nowTemp">--</strong>
+            </div>
+          </div>
+          <label class="opacity">
+            <span>Radar opacity</span>
+            <input id="opacitySlider" type="range" min="20" max="100" value="82" />
+          </label>
+          <div id="alertsList" class="alerts-list">No active alerts for the selected point.</div>
+        </div>
+
+        <div class="tab-panel" id="hourlyPanel">
+          <div class="forecast-head">
+            <div>
+              <span class="label">Weather.gov hourly</span>
+              <strong id="hourlySummary">Loading forecast</strong>
+            </div>
+            <span id="forecastUpdated">--</span>
+          </div>
+          <canvas id="hourlyChart" aria-label="Hourly forecast chart"></canvas>
+          <div id="hourlyList" class="hourly-list"></div>
+        </div>
+
+        <div class="tab-panel" id="discussionPanel">
+          <div class="forecast-head">
+            <div>
+              <span class="label">Area Forecast Discussion</span>
+              <strong id="discussionOffice">NWS</strong>
+            </div>
+            <span id="discussionTime">--</span>
+          </div>
+          <div id="keyMessages" class="key-messages">Loading forecaster notes...</div>
+          <pre id="discussionText">Loading discussion...</pre>
+        </div>
       </section>
     </main>
 
+    <script src="maplibre-gl.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

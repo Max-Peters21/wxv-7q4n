@@ -1,51 +1,37 @@
+const MAP_STYLE = "https://tiles.openfreemap.org/styles/liberty";
 const RADAR_SERVICE =
   "https://mapservices.weather.noaa.gov/eventdriven/rest/services/radar/radar_base_reflectivity_time/ImageServer/exportImage";
-
-const TILE_SIZE = 256;
+const DEFAULT_CENTER = [-88.9906, 40.5142];
 const EARTH_RADIUS = 6378137;
-const NORMAL_IL = { lat: 40.5142, lon: -88.9906 };
+const RADAR_BUFFER = 0.85;
+
 const state = {
-  center: { ...NORMAL_IL },
-  zoom: 8,
-  opacity: 0.86,
-  radarImage: null,
-  lastGoodFrame: null,
+  opacity: 0.82,
+  radarLoaded: null,
+  radarRequestId: 0,
+  radarLoadStarted: 0,
   playTimer: null,
   frameIndex: 0,
-  requestId: 0,
-  loadStarted: 0,
-  pointers: new Map(),
-  pinchStart: null,
+  point: null,
+  hourly: [],
+  activeTab: "radar",
+  lastWeatherCenter: null,
 };
 
 const $ = (id) => document.getElementById(id);
-const mapEl = $("map");
-const basemap = $("basemap");
-const ctx = basemap.getContext("2d");
-const radarEl = $("radar");
 
-const PLACES = [
-  { name: "Normal", lat: 40.5142, lon: -88.9906 },
-  { name: "Bloomington", lat: 40.4842, lon: -88.9937 },
-  { name: "Peoria", lat: 40.6936, lon: -89.589 },
-  { name: "Springfield", lat: 39.7817, lon: -89.6501 },
-  { name: "Champaign", lat: 40.1164, lon: -88.2434 },
-  { name: "Decatur", lat: 39.8403, lon: -88.9548 },
-  { name: "Pontiac", lat: 40.8809, lon: -88.6298 },
-  { name: "Lincoln", lat: 40.1484, lon: -89.3648 },
-  { name: "Joliet", lat: 41.525, lon: -88.0817 },
-  { name: "Chicago", lat: 41.8781, lon: -87.6298 },
-  { name: "St. Louis", lat: 38.627, lon: -90.1994 },
-  { name: "Indianapolis", lat: 39.7684, lon: -86.1581 },
-];
+const map = new maplibregl.Map({
+  container: "map",
+  style: MAP_STYLE,
+  center: DEFAULT_CENTER,
+  zoom: 8.3,
+  minZoom: 4,
+  maxZoom: 14,
+  attributionControl: false,
+});
 
-const ROADS = [
-  { name: "I-55", color: "#d96b75", width: 2.3, points: [[41.88, -87.63], [41.52, -88.08], [40.88, -88.63], [40.51, -88.99], [40.15, -89.36], [39.78, -89.65], [38.63, -90.2]] },
-  { name: "I-74", color: "#d96b75", width: 2.3, points: [[40.69, -89.59], [40.51, -88.99], [40.12, -88.24], [39.77, -86.16]] },
-  { name: "I-39", color: "#d96b75", width: 2.1, points: [[42.27, -89.09], [41.89, -89.07], [41.36, -89.13], [40.88, -88.99], [40.51, -88.99]] },
-  { name: "US-51", color: "#e0a84f", width: 1.7, points: [[41.0, -89.02], [40.51, -88.99], [40.15, -89.36], [39.84, -88.95], [39.48, -89.0]] },
-  { name: "US-150", color: "#e0a84f", width: 1.7, points: [[40.73, -89.62], [40.51, -88.99], [40.31, -88.65], [40.12, -88.24]] },
-];
+map.dragRotate.disable();
+map.touchZoomRotate.disableRotation();
 
 function setStatus(text, tone = "") {
   const status = $("status");
@@ -53,34 +39,22 @@ function setStatus(text, tone = "") {
   status.className = `status ${tone}`.trim();
 }
 
-function clamp(value, min, max) {
-  return Math.min(max, Math.max(min, value));
+function pad(value) {
+  return String(value).padStart(2, "0");
 }
 
-function debounce(fn, wait) {
-  let timer = 0;
-  return (...args) => {
-    clearTimeout(timer);
-    timer = window.setTimeout(() => fn(...args), wait);
-  };
+function formatClock(value) {
+  if (!value) return "--";
+  const date = new Date(value);
+  const hours = date.getHours();
+  const suffix = hours >= 12 ? "PM" : "AM";
+  return `${hours % 12 || 12}:${pad(date.getMinutes())} ${suffix}`;
 }
 
-function lonToX(lon, zoom) {
-  return ((lon + 180) / 360) * TILE_SIZE * 2 ** zoom;
-}
-
-function latToY(lat, zoom) {
-  const sin = Math.sin((lat * Math.PI) / 180);
-  return (0.5 - Math.log((1 + sin) / (1 - sin)) / (4 * Math.PI)) * TILE_SIZE * 2 ** zoom;
-}
-
-function xToLon(x, zoom) {
-  return (x / (TILE_SIZE * 2 ** zoom)) * 360 - 180;
-}
-
-function yToLat(y, zoom) {
-  const n = Math.PI - (2 * Math.PI * y) / (TILE_SIZE * 2 ** zoom);
-  return (180 / Math.PI) * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
+function formatShortDate(value) {
+  if (!value) return "--";
+  const date = new Date(value);
+  return `${date.toLocaleDateString([], { weekday: "short" })} ${formatClock(value)}`;
 }
 
 function mercatorMeters(lat, lon) {
@@ -90,151 +64,39 @@ function mercatorMeters(lat, lon) {
   };
 }
 
-function viewportBounds() {
-  const rect = mapEl.getBoundingClientRect();
-  const centerX = lonToX(state.center.lon, state.zoom);
-  const centerY = latToY(state.center.lat, state.zoom);
-  const westX = centerX - rect.width / 2;
-  const eastX = centerX + rect.width / 2;
-  const northY = centerY - rect.height / 2;
-  const southY = centerY + rect.height / 2;
+function bufferedBounds() {
+  const canvas = map.getCanvas();
+  const width = canvas.clientWidth;
+  const height = canvas.clientHeight;
+  const nw = map.unproject([-width * RADAR_BUFFER, -height * RADAR_BUFFER]);
+  const ne = map.unproject([width * (1 + RADAR_BUFFER), -height * RADAR_BUFFER]);
+  const se = map.unproject([width * (1 + RADAR_BUFFER), height * (1 + RADAR_BUFFER)]);
+  const sw = map.unproject([-width * RADAR_BUFFER, height * (1 + RADAR_BUFFER)]);
 
   return {
-    north: yToLat(northY, state.zoom),
-    south: yToLat(southY, state.zoom),
-    west: xToLon(westX, state.zoom),
-    east: xToLon(eastX, state.zoom),
+    west: Math.min(nw.lng, sw.lng),
+    east: Math.max(ne.lng, se.lng),
+    north: Math.max(nw.lat, ne.lat),
+    south: Math.min(sw.lat, se.lat),
+    coordinates: [
+      [nw.lng, nw.lat],
+      [ne.lng, ne.lat],
+      [se.lng, se.lat],
+      [sw.lng, sw.lat],
+    ],
+    pixelWidth: Math.round(width * (1 + RADAR_BUFFER * 2) * Math.min(window.devicePixelRatio || 1, 2)),
+    pixelHeight: Math.round(height * (1 + RADAR_BUFFER * 2) * Math.min(window.devicePixelRatio || 1, 2)),
   };
 }
 
-function projectedBbox() {
-  const bounds = viewportBounds();
+function radarUrl(timeMs, bounds) {
   const sw = mercatorMeters(bounds.south, bounds.west);
   const ne = mercatorMeters(bounds.north, bounds.east);
-  return `${sw.x},${sw.y},${ne.x},${ne.y}`;
-}
-
-function displaySize() {
-  const rect = mapEl.getBoundingClientRect();
-  const scale = Math.min(window.devicePixelRatio || 1, 2);
-  return `${Math.round(rect.width * scale)},${Math.round(rect.height * scale)}`;
-}
-
-function screenPoint(lat, lon, zoom = state.zoom) {
-  const rect = mapEl.getBoundingClientRect();
-  const centerX = lonToX(state.center.lon, zoom);
-  const centerY = latToY(state.center.lat, zoom);
-  return {
-    x: lonToX(lon, zoom) - centerX + rect.width / 2,
-    y: latToY(lat, zoom) - centerY + rect.height / 2,
-  };
-}
-
-function renderBasemap() {
-  const rect = mapEl.getBoundingClientRect();
-  const scale = window.devicePixelRatio || 1;
-  basemap.width = Math.round(rect.width * scale);
-  basemap.height = Math.round(rect.height * scale);
-  basemap.style.width = `${rect.width}px`;
-  basemap.style.height = `${rect.height}px`;
-  ctx.setTransform(scale, 0, 0, scale, 0, 0);
-  ctx.clearRect(0, 0, rect.width, rect.height);
-
-  const gradient = ctx.createLinearGradient(0, 0, 0, rect.height);
-  gradient.addColorStop(0, "#162128");
-  gradient.addColorStop(1, "#0e151a");
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, rect.width, rect.height);
-
-  drawGrid(rect);
-  drawRoads(rect);
-  drawPlaces(rect);
-}
-
-function drawGrid(rect) {
-  const bounds = viewportBounds();
-  const step = state.zoom >= 9 ? 0.25 : state.zoom >= 7 ? 0.5 : 1;
-  ctx.lineWidth = 1;
-  ctx.strokeStyle = "rgba(255,255,255,0.12)";
-  ctx.fillStyle = "rgba(247,251,255,0.52)";
-  ctx.font = "11px system-ui, sans-serif";
-
-  for (let lat = Math.floor(bounds.south / step) * step; lat <= bounds.north; lat += step) {
-    const a = screenPoint(lat, bounds.west);
-    const b = screenPoint(lat, bounds.east);
-    ctx.beginPath();
-    ctx.moveTo(a.x, a.y);
-    ctx.lineTo(b.x, b.y);
-    ctx.stroke();
-  }
-
-  for (let lon = Math.floor(bounds.west / step) * step; lon <= bounds.east; lon += step) {
-    const a = screenPoint(bounds.south, lon);
-    const b = screenPoint(bounds.north, lon);
-    ctx.beginPath();
-    ctx.moveTo(a.x, a.y);
-    ctx.lineTo(b.x, b.y);
-    ctx.stroke();
-  }
-
-  ctx.fillText(`${state.center.lat.toFixed(2)}, ${state.center.lon.toFixed(2)}  z${state.zoom}`, 14, rect.height - 118);
-}
-
-function drawRoads(rect) {
-  for (const road of ROADS) {
-    ctx.beginPath();
-    road.points.forEach(([lat, lon], index) => {
-      const p = screenPoint(lat, lon);
-      if (index === 0) ctx.moveTo(p.x, p.y);
-      else ctx.lineTo(p.x, p.y);
-    });
-    ctx.lineWidth = road.width + 2;
-    ctx.strokeStyle = "rgba(0,0,0,0.34)";
-    ctx.stroke();
-    ctx.lineWidth = road.width;
-    ctx.strokeStyle = road.color;
-    ctx.stroke();
-
-    const mid = road.points[Math.floor(road.points.length / 2)];
-    const label = screenPoint(mid[0], mid[1]);
-    if (label.x > -40 && label.x < rect.width + 40 && label.y > -20 && label.y < rect.height + 20) {
-      ctx.fillStyle = "rgba(10,13,16,0.72)";
-      ctx.fillRect(label.x - 18, label.y - 11, 36, 18);
-      ctx.fillStyle = "#f7fbff";
-      ctx.font = "700 10px system-ui, sans-serif";
-      ctx.textAlign = "center";
-      ctx.fillText(road.name, label.x, label.y + 3);
-      ctx.textAlign = "start";
-    }
-  }
-}
-
-function drawPlaces(rect) {
-  ctx.font = "700 12px system-ui, sans-serif";
-  for (const place of PLACES) {
-    const p = screenPoint(place.lat, place.lon);
-    if (p.x < -50 || p.x > rect.width + 50 || p.y < -20 || p.y > rect.height + 20) continue;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, place.name === "Normal" ? 4 : 3, 0, Math.PI * 2);
-    ctx.fillStyle = place.name === "Normal" ? "#2ee89d" : "rgba(247,251,255,0.82)";
-    ctx.fill();
-    ctx.lineWidth = 2;
-    ctx.strokeStyle = "rgba(0,0,0,0.55)";
-    ctx.stroke();
-    ctx.fillStyle = "#f7fbff";
-    ctx.strokeStyle = "rgba(0,0,0,0.8)";
-    ctx.lineWidth = 3;
-    ctx.strokeText(place.name, p.x + 7, p.y - 7);
-    ctx.fillText(place.name, p.x + 7, p.y - 7);
-  }
-}
-
-function radarUrl(timeMs) {
   const params = new URLSearchParams({
-    bbox: projectedBbox(),
+    bbox: `${sw.x},${sw.y},${ne.x},${ne.y}`,
     bboxSR: "3857",
     imageSR: "3857",
-    size: displaySize(),
+    size: `${Math.min(bounds.pixelWidth, 1800)},${Math.min(bounds.pixelHeight, 1800)}`,
     format: "png32",
     transparent: "true",
     f: "image",
@@ -242,19 +104,6 @@ function radarUrl(timeMs) {
 
   if (timeMs) params.set("time", String(timeMs));
   return `${RADAR_SERVICE}?${params.toString()}`;
-}
-
-function pad(value) {
-  return String(value).padStart(2, "0");
-}
-
-function formatTime(ms) {
-  if (!ms) return "Latest radar";
-  const date = new Date(ms);
-  const hours = date.getHours();
-  const mins = pad(date.getMinutes());
-  const suffix = hours >= 12 ? "PM" : "AM";
-  return `${hours % 12 || 12}:${mins} ${suffix}`;
 }
 
 function nearestFrameTime(minutesAgo = 0) {
@@ -267,108 +116,56 @@ function frameTimes() {
 }
 
 function loadRadar(timeMs = 0, { quiet = false } = {}) {
-  const requestId = ++state.requestId;
-  const url = radarUrl(timeMs);
-  state.loadStarted = performance.now();
+  if (!map.isStyleLoaded()) return;
+
+  const requestId = ++state.radarRequestId;
+  const bounds = bufferedBounds();
+  const url = radarUrl(timeMs, bounds);
+  state.radarLoadStarted = performance.now();
 
   if (!quiet) {
-    setStatus("Loading");
-    $("timestamp").textContent = timeMs ? `Radar ${formatTime(timeMs)}` : "Latest radar";
+    setStatus("Radar");
+    $("timestamp").textContent = timeMs ? formatClock(timeMs) : "Latest";
   }
 
   const image = new Image();
-  image.className = "radar-frame";
+  image.crossOrigin = "anonymous";
   image.decoding = "async";
-  image.style.opacity = state.opacity;
-
   image.onload = () => {
-    if (requestId !== state.requestId && !state.playTimer) return;
-    radarEl.replaceChildren(image);
-    state.radarImage = image;
-    state.lastGoodFrame = { url, label: formatTime(timeMs), timeMs };
+    if (requestId !== state.radarRequestId && !state.playTimer) return;
+    putRadarImage(url, bounds.coordinates);
+    state.radarLoaded = { bounds, timeMs };
+    $("timestamp").textContent = timeMs ? formatClock(timeMs) : "Latest";
+    $("latency").textContent = `${Math.round(performance.now() - state.radarLoadStarted)} ms`;
     setStatus(state.playTimer ? "Loop" : "Live");
-    $("timestamp").textContent = timeMs ? `Radar ${formatTime(timeMs)}` : "Latest radar";
-    $("latency").textContent = `${Math.round(performance.now() - state.loadStarted)} ms`;
   };
-
   image.onerror = () => {
-    if (state.lastGoodFrame) {
-      setStatus("Cached", "warn");
-      $("timestamp").textContent = `Holding ${state.lastGoodFrame.label}`;
-      $("latency").textContent = "retrying";
-      window.setTimeout(() => loadRadar(timeMs, { quiet: true }), 1400);
-      return;
-    }
-
-    setStatus("No radar", "bad");
-    $("latency").textContent = "failed";
+    setStatus(state.radarLoaded ? "Cached" : "No radar", state.radarLoaded ? "warn" : "bad");
+    $("latency").textContent = state.radarLoaded ? "holding" : "failed";
   };
-
   image.src = url;
 }
 
-const refreshAfterMove = debounce(() => {
-  if (!state.playTimer) loadRadar(0);
-}, 280);
-
-function renderAll() {
-  renderBasemap();
-  refreshAfterMove();
-}
-
-function setCenterFromPixels(centerX, centerY, zoom = state.zoom) {
-  state.center.lon = xToLon(centerX, zoom);
-  state.center.lat = clamp(yToLat(centerY, zoom), -85, 85);
-}
-
-function panBy(dx, dy) {
-  const centerX = lonToX(state.center.lon, state.zoom) - dx;
-  const centerY = latToY(state.center.lat, state.zoom) - dy;
-  setCenterFromPixels(centerX, centerY);
-  renderBasemap();
-}
-
-function zoomBy(delta, originX = mapEl.clientWidth / 2, originY = mapEl.clientHeight / 2) {
-  const oldZoom = state.zoom;
-  const newZoom = clamp(Math.round(state.zoom + delta), 3, 13);
-  if (newZoom === oldZoom) return;
-
-  const oldCenterX = lonToX(state.center.lon, oldZoom);
-  const oldCenterY = latToY(state.center.lat, oldZoom);
-  const worldX = oldCenterX + originX - mapEl.clientWidth / 2;
-  const worldY = oldCenterY + originY - mapEl.clientHeight / 2;
-  const scale = 2 ** (newZoom - oldZoom);
-  const newCenterX = worldX * scale - originX + mapEl.clientWidth / 2;
-  const newCenterY = worldY * scale - originY + mapEl.clientHeight / 2;
-
-  state.zoom = newZoom;
-  setCenterFromPixels(newCenterX, newCenterY, newZoom);
-  renderAll();
-}
-
-function useLocation() {
-  if (!navigator.geolocation) {
-    setStatus("No GPS", "bad");
+function putRadarImage(url, coordinates) {
+  if (!map.getSource("radar")) {
+    map.addSource("radar", {
+      type: "image",
+      url,
+      coordinates,
+    });
+    map.addLayer({
+      id: "radar-layer",
+      type: "raster",
+      source: "radar",
+      paint: {
+        "raster-opacity": state.opacity,
+        "raster-resampling": "linear",
+      },
+    });
     return;
   }
 
-  setStatus("Locating");
-  navigator.geolocation.getCurrentPosition(
-    (position) => {
-      state.center = {
-        lat: position.coords.latitude,
-        lon: position.coords.longitude,
-      };
-      state.zoom = 9;
-      renderBasemap();
-      loadRadar(0);
-    },
-    () => {
-      setStatus("GPS off", "warn");
-      loadRadar(0);
-    },
-    { enableHighAccuracy: false, timeout: 5000, maximumAge: 600000 },
-  );
+  map.getSource("radar").updateImage({ url, coordinates });
 }
 
 function toggleLoop() {
@@ -390,71 +187,307 @@ function toggleLoop() {
   state.playTimer = window.setInterval(() => {
     state.frameIndex = (state.frameIndex + 1) % frames.length;
     loadRadar(frames[state.frameIndex], { quiet: true });
-  }, 700);
+  }, 750);
 }
 
-mapEl.addEventListener("pointerdown", (event) => {
-  mapEl.setPointerCapture(event.pointerId);
-  state.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+function debounce(fn, wait) {
+  let timer = 0;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = window.setTimeout(() => fn(...args), wait);
+  };
+}
 
-  if (state.pointers.size === 2) {
-    const points = [...state.pointers.values()];
-    state.pinchStart = {
-      distance: Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y),
-      zoom: state.zoom,
-    };
-  }
-});
+function centerPoint() {
+  const center = map.getCenter();
+  return {
+    lat: Number(center.lat.toFixed(4)),
+    lon: Number(center.lng.toFixed(4)),
+  };
+}
 
-mapEl.addEventListener("pointermove", (event) => {
-  if (!state.pointers.has(event.pointerId)) return;
-  const previous = state.pointers.get(event.pointerId);
-  state.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+function distanceKm(a, b) {
+  if (!a || !b) return Infinity;
+  const lat1 = (a.lat * Math.PI) / 180;
+  const lat2 = (b.lat * Math.PI) / 180;
+  const dLat = ((b.lat - a.lat) * Math.PI) / 180;
+  const dLon = ((b.lon - a.lon) * Math.PI) / 180;
+  const h =
+    Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+  return 6371 * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+}
 
-  if (state.pointers.size === 1) {
-    panBy(event.clientX - previous.x, event.clientY - previous.y);
-  } else if (state.pointers.size === 2 && state.pinchStart) {
-    const points = [...state.pointers.values()];
-    const distance = Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
-    const delta = Math.round(Math.log2(distance / state.pinchStart.distance));
-    const nextZoom = clamp(state.pinchStart.zoom + delta, 3, 13);
-    if (nextZoom !== state.zoom) {
-      state.zoom = nextZoom;
-      renderAll();
-    }
-  }
-});
+async function fetchJson(url) {
+  const response = await fetch(url, {
+    headers: {
+      Accept: "application/geo+json, application/ld+json, application/json",
+    },
+  });
 
-function endPointer(event) {
-  state.pointers.delete(event.pointerId);
-  if (state.pointers.size === 0) {
-    state.pinchStart = null;
-    refreshAfterMove();
+  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+  return response.json();
+}
+
+async function refreshWeather(force = false) {
+  const point = centerPoint();
+  if (!force && distanceKm(state.lastWeatherCenter, point) < 8) return;
+  state.lastWeatherCenter = point;
+
+  try {
+    const pointData = await fetchJson(`https://api.weather.gov/points/${point.lat},${point.lon}`);
+    const props = pointData.properties;
+    state.point = props;
+    updatePlace(props);
+    await Promise.all([loadHourly(props.forecastHourly), loadAlerts(point), loadDiscussion(props.cwa)]);
+  } catch (error) {
+    $("hourlySummary").textContent = "Forecast unavailable";
+    $("discussionText").textContent = "Could not load Weather.gov data.";
   }
 }
 
-mapEl.addEventListener("pointerup", endPointer);
-mapEl.addEventListener("pointercancel", endPointer);
-mapEl.addEventListener("dblclick", (event) => zoomBy(1, event.clientX, event.clientY));
+function updatePlace(props) {
+  const loc = props.relativeLocation?.properties;
+  $("placeLabel").textContent = loc ? `${loc.city}, ${loc.state} · ${props.cwa}` : props.cwa || "Selected point";
+  $("discussionOffice").textContent = props.cwa ? `NWS ${props.cwa}` : "NWS";
+}
 
-$("zoomInBtn").addEventListener("click", () => zoomBy(1));
-$("zoomOutBtn").addEventListener("click", () => zoomBy(-1));
+async function loadHourly(url) {
+  const data = await fetchJson(url);
+  state.hourly = data.properties.periods || [];
+  renderHourly(data.properties);
+}
+
+function renderHourly(props) {
+  const hours = state.hourly.slice(0, 36);
+  const first = hours[0];
+  $("nowTemp").textContent = first ? `${first.temperature}°` : "--";
+  $("hourlySummary").textContent = first
+    ? `${first.temperature}° · ${first.shortForecast}`
+    : "No hourly forecast";
+  $("forecastUpdated").textContent = props.updateTime ? `Updated ${formatClock(props.updateTime)}` : "--";
+
+  const list = $("hourlyList");
+  list.replaceChildren(
+    ...hours.slice(0, 18).map((hour) => {
+      const card = document.createElement("div");
+      card.className = "hourly-card";
+      const pop = hour.probabilityOfPrecipitation?.value ?? 0;
+      card.innerHTML = `<b>${formatClock(hour.startTime).replace(":00 ", " ")}</b>
+        <span>${hour.temperature}° · ${pop}%</span>
+        <span>${hour.windSpeed} ${hour.windDirection}</span>
+        <span>${hour.shortForecast}</span>`;
+      return card;
+    }),
+  );
+
+  drawHourlyChart(hours);
+}
+
+function parseWind(value) {
+  if (!value) return 0;
+  const match = String(value).match(/\d+/);
+  return match ? Number(match[0]) : 0;
+}
+
+function drawHourlyChart(hours) {
+  const canvas = $("hourlyChart");
+  const rect = canvas.getBoundingClientRect();
+  const scale = window.devicePixelRatio || 1;
+  canvas.width = Math.round(rect.width * scale);
+  canvas.height = Math.round(rect.height * scale);
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(scale, 0, 0, scale, 0, 0);
+  ctx.clearRect(0, 0, rect.width, rect.height);
+
+  if (!hours.length) return;
+
+  const padX = 26;
+  const top = 16;
+  const bottom = rect.height - 24;
+  const plotW = rect.width - padX * 2;
+  const temps = hours.map((h) => h.temperature);
+  const winds = hours.map((h) => parseWind(h.windSpeed));
+  const pops = hours.map((h) => h.probabilityOfPrecipitation?.value ?? 0);
+  const minTemp = Math.min(...temps) - 3;
+  const maxTemp = Math.max(...temps) + 3;
+  const maxWind = Math.max(20, ...winds);
+  const x = (index) => padX + (index / Math.max(hours.length - 1, 1)) * plotW;
+  const yTemp = (temp) => bottom - ((temp - minTemp) / (maxTemp - minTemp || 1)) * (bottom - top);
+  const yWind = (wind) => bottom - (wind / maxWind) * (bottom - top);
+
+  ctx.strokeStyle = "rgba(255,255,255,0.14)";
+  ctx.lineWidth = 1;
+  for (let i = 0; i < 4; i += 1) {
+    const y = top + (i / 3) * (bottom - top);
+    ctx.beginPath();
+    ctx.moveTo(padX, y);
+    ctx.lineTo(rect.width - padX, y);
+    ctx.stroke();
+  }
+
+  pops.forEach((pop, index) => {
+    const barH = (pop / 100) * (bottom - top);
+    ctx.fillStyle = "rgba(104,167,255,0.42)";
+    ctx.fillRect(x(index) - 3, bottom - barH, 6, barH);
+  });
+
+  drawLine(ctx, temps.map((temp, index) => [x(index), yTemp(temp)]), "#ff7b8b", 2.5);
+  drawLine(ctx, winds.map((wind, index) => [x(index), yWind(wind)]), "#2ee89d", 2);
+
+  ctx.fillStyle = "rgba(248,251,255,0.72)";
+  ctx.font = "10px system-ui, sans-serif";
+  ctx.fillText(`${Math.round(maxTemp)}°`, 4, top + 4);
+  ctx.fillText(`${Math.round(minTemp)}°`, 4, bottom);
+  ctx.fillStyle = "#ff7b8b";
+  ctx.fillText("temp", rect.width - 58, 16);
+  ctx.fillStyle = "#68a7ff";
+  ctx.fillText("rain", rect.width - 58, 30);
+  ctx.fillStyle = "#2ee89d";
+  ctx.fillText("wind", rect.width - 58, 44);
+}
+
+function drawLine(ctx, points, color, width) {
+  ctx.beginPath();
+  points.forEach(([x, y], index) => {
+    if (index === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.lineWidth = width;
+  ctx.strokeStyle = color;
+  ctx.stroke();
+}
+
+async function loadAlerts(point) {
+  const data = await fetchJson(`https://api.weather.gov/alerts/active?point=${point.lat},${point.lon}`);
+  const alerts = data.features || [];
+  const pill = $("alertPill");
+  const list = $("alertsList");
+
+  if (!alerts.length) {
+    pill.textContent = "No alerts";
+    pill.classList.remove("active");
+    list.textContent = "No active alerts for the selected point.";
+    return;
+  }
+
+  pill.textContent = `${alerts.length} alert${alerts.length === 1 ? "" : "s"}`;
+  pill.classList.add("active");
+  list.replaceChildren(
+    ...alerts.slice(0, 4).map((alert) => {
+      const props = alert.properties;
+      const item = document.createElement("div");
+      item.className = "alert-item";
+      item.innerHTML = `<strong>${props.event}</strong><span>${props.headline || props.description || ""}</span>`;
+      return item;
+    }),
+  );
+}
+
+async function loadDiscussion(office) {
+  if (!office) return;
+  const list = await fetchJson(`https://api.weather.gov/products/types/AFD/locations/${office}`);
+  const latest = list["@graph"]?.[0];
+  if (!latest) throw new Error("No AFD found");
+  const product = await fetchJson(`https://api.weather.gov/products/${latest.id}`);
+  renderDiscussion(product);
+}
+
+function renderDiscussion(product) {
+  $("discussionTime").textContent = formatShortDate(product.issuanceTime);
+  const text = product.productText || "";
+  $("keyMessages").textContent = extractKeyMessages(text);
+  $("discussionText").textContent = cleanDiscussion(text);
+}
+
+function extractKeyMessages(text) {
+  const match = text.match(/\.KEY MESSAGES\.\.\.([\s\S]*?)&&/i);
+  if (!match) return "No key messages section in the latest discussion.";
+  return match[1]
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/^\s+/gm, "")
+    .trim();
+}
+
+function cleanDiscussion(text) {
+  return text
+    .replace(/^\s*000\s*/i, "")
+    .replace(/^FXUS[\s\S]*?Area Forecast Discussion/i, "Area Forecast Discussion")
+    .replace(/\n&&\n/g, "\n\n")
+    .trim();
+}
+
+const refreshAfterMove = debounce(() => {
+  if (!state.playTimer) loadRadar(0, { quiet: true });
+  refreshWeather(false);
+}, 650);
+
+function useLocation() {
+  if (!navigator.geolocation) {
+    setStatus("No GPS", "bad");
+    return;
+  }
+
+  setStatus("Locating");
+  navigator.geolocation.getCurrentPosition(
+    (position) => {
+      map.easeTo({
+        center: [position.coords.longitude, position.coords.latitude],
+        zoom: Math.max(map.getZoom(), 9),
+        duration: 550,
+      });
+      window.setTimeout(() => {
+        loadRadar(0);
+        refreshWeather(true);
+      }, 600);
+    },
+    () => {
+      setStatus("GPS off", "warn");
+      refreshWeather(true);
+    },
+    { enableHighAccuracy: false, timeout: 5000, maximumAge: 600000 },
+  );
+}
+
+function switchTab(tabName) {
+  state.activeTab = tabName;
+  document.querySelectorAll(".tab").forEach((tab) => {
+    tab.classList.toggle("active", tab.dataset.tab === tabName);
+  });
+  document.querySelectorAll(".tab-panel").forEach((panel) => {
+    panel.classList.toggle("active", panel.id === `${tabName}Panel`);
+  });
+  if (tabName === "hourly") drawHourlyChart(state.hourly.slice(0, 36));
+}
+
+document.querySelectorAll(".tab").forEach((tab) => {
+  tab.addEventListener("click", () => switchTab(tab.dataset.tab));
+});
+
+$("zoomInBtn").addEventListener("click", () => map.zoomIn({ duration: 220 }));
+$("zoomOutBtn").addEventListener("click", () => map.zoomOut({ duration: 220 }));
 $("locateBtn").addEventListener("click", useLocation);
-$("refreshBtn").addEventListener("click", () => loadRadar(0));
+$("refreshBtn").addEventListener("click", () => {
+  loadRadar(0);
+  refreshWeather(true);
+});
 $("playBtn").addEventListener("click", toggleLoop);
 $("opacitySlider").addEventListener("input", (event) => {
   state.opacity = Number(event.target.value) / 100;
-  if (state.radarImage) state.radarImage.style.opacity = state.opacity;
+  if (map.getLayer("radar-layer")) map.setPaintProperty("radar-layer", "raster-opacity", state.opacity);
 });
 
-window.addEventListener("resize", renderAll);
+map.on("load", () => {
+  loadRadar(0);
+  refreshWeather(true);
+  window.setTimeout(useLocation, 250);
+});
+
+map.on("moveend", refreshAfterMove);
+map.on("zoomend", refreshAfterMove);
+window.addEventListener("resize", () => drawHourlyChart(state.hourly.slice(0, 36)));
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
     navigator.serviceWorker.register("service-worker.js").catch(() => {});
   });
 }
-
-renderBasemap();
-loadRadar(0);
-window.setTimeout(useLocation, 250);
